@@ -1,0 +1,115 @@
+# dictselect
+
+A Python library for extracting data from nested dicts and lists using reusable pipelines.
+
+```python
+from dictselect import Selector
+
+pipe = Selector["annotations"][:]["x_min", "x_max"]
+my_data_selection = pipe(data_dict)
+```
+
+## Installation
+
+```bash
+pip install dictselect
+```
+
+Requires Python ≥ 3.9.
+
+## How it works
+
+Build a `Selector` by chaining operations, then call it with your data. The pipeline is built to be reusable.
+
+```python
+from dictselect import Selector
+
+data_dict = {
+    "image_id": "xa001",
+    "annotations": [
+        {"id": 1, "x_min": 10, "x_max": 20, "label": "cat"},
+        {"id": 2, "x_min": 30, "x_max": 50, "label": "dog"},
+    ],
+}
+
+Selector["image_id"](data_dict)                          # → "xa001"
+Selector["annotations"][0]["label"](data_dict)           # → "cat"
+Selector["annotations"][:]["label"](data_dict)           # → ["cat", "dog"]
+Selector["annotations"][:]["x_min", "x_max"](data_dict)  # → [[10, 20], [30, 50]]
+```
+
+## Operations
+
+| Syntax                             | What it does                                                            |
+|------------------------------------|-------------------------------------------------------------------------|
+| `Selector["key"]`                  | Dict key or list index lookup                                           |
+| `Selector[0]`, `Selector[-1]`      | List index                                                              |
+| `Selector[1:3]`                    | Slice                                                                   |
+| `Selector[:]` or `Selector[...]`   | Fan-out — apply the rest of the chain to **every element** at this step |
+| `Selector["a", "b"]`               | Input multiple keys at once, returns a list                             |
+| `Selector.method()`                | Call a method on the current value                                      |
+| `pipe_a + pipe_b`                  | Compose two pipelines into one                                          |
+| `Selector.invoke(*args, **kwargs)` | Call the function if the current value is a function                    |
+
+### Fan-out `[:]`
+
+`[:]` maps the remaining steps over every item in this step. Steps after `[:]` run on each element individually.
+
+```python
+data = [{"v": 1}, {"v": 2}, {"v": 3}]
+
+Selector[:]["v"](data)   # → [1, 2, 3]
+Selector[:][:][0]([[10, 20], [30, 40]])  # → [[10], [30]]  (nested fan-out)
+```
+
+### Multi-key input `["a", "b"]`
+
+Returns a list of values for each key. All keys must be the same type (all strings or all integers).
+
+```python
+Selector["x", "y"]({"x": 1, "y": 2, "z": 3})  # → [1, 2]
+```
+
+### Method calls
+
+Access an attribute, then call it like a regular Python method.
+
+```python
+Selector.upper()("hello")               # → "HELLO"
+Selector[:].upper()(["hi", "there"])    # → ["HI", "THERE"]
+```
+
+### Composition
+
+Join two pipelines with `+`.
+
+```python
+head = Selector["data"][:]
+tail = Selector["value"]
+(head + tail)({"data": [{"value": 1}, {"value": 2}]})  # → [1, 2]
+```
+
+## Calling vs. evaluating
+
+Normally, calling a selector evaluates it:
+
+```python
+pipe = Selector["key"]
+pipe({"key": 42})  # → 42
+```
+
+**Exception 1:** if the last step is an attribute name (e.g. `.upper`), calling it *records* a method call instead of evaluating. Use `.apply(data)` to force evaluation in that case.
+
+```python
+pipe = Selector["title"].upper()       # records .upper() call
+pipe({"title": "hello"})               # evaluates → "HELLO"
+
+Selector.upper.apply("hello")          # force evaluation → <method object>
+```
+
+**Exception 2:** if the last step is a function as a value, use `.invoke(*args, **kwargs)` to force evaluation in that case.
+
+```python
+pipe = Selector["function"]()            # value will be a function. Calling the function, results in evaluating the selector -> ERROR.
+pipe = Selector["function"].invoke()     # Calls the function without evaluating the Selector
+```
