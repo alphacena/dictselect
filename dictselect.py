@@ -25,6 +25,7 @@ Supported operations
 * pipe_a + pipe_b                   — compose two pipelines
 * pipe(data) or pipe.apply(data)    — evaluate a pipeline against data
 * pipe(data, include_keys=True)     — wrap leaf result(s) with the last key as a dict
+* pipe(data, include_null=True)     — return None for missing keys instead of raising
 
 Python ≥ 3.9 is required.
 """
@@ -35,6 +36,8 @@ from typing import Any
 
 __all__ = ["Selector"]
 __version__ = "0.1.0"
+
+_MISSING = object()  # sentinel for a failed retrieval when include_null=True
 
 
 class Selector:
@@ -230,12 +233,12 @@ class Selector:
         """
         if self.steps and self.steps[-1][0] == "getattr":
             return type(self)(self.steps + (("call", args, kwargs),))
-        extra = set(kwargs) - {"include_keys"}
+        extra = set(kwargs) - {"include_keys", "include_null"}
         if len(args) != 1 or extra:
             raise TypeError(
                 "Selector evaluation expects exactly one positional argument "
-                "(the data) and an optional include_keys keyword. To record a "
-                "method call, access the method via attribute first "
+                "(the data) and optional include_keys / include_null keywords. "
+                "To record a method call, access the method via attribute first "
                 "(e.g. pipe.method(args)), or use "
                 "pipe.invoke(args) to record a call step explicitly."
             )
@@ -290,7 +293,7 @@ class Selector:
         """
         return f"Selector({list(self.steps)!r})"
 
-    def apply(self, data: Any, include_keys: bool = False) -> Any:
+    def apply(self, data: Any, include_keys: bool = False, include_null: bool = False) -> Any:
         """Evaluate the recorded pipeline against data.
 
         Steps are executed in order:
@@ -307,15 +310,26 @@ class Selector:
         Args:
             data: The root data object to query.
             include_keys: If True, wrap the leaf result with the last key-bearing
-                          step's key(s) as a dict.  Only ``getitem`` and ``multi`` steps
-                          qualify; all other terminal steps leave the result unchanged.
+                step's key(s) as a dict.  Only ``getitem`` and ``multi`` steps
+                qualify; all other terminal steps leave the result unchanged.
 
-                          Selector["b"].apply({"b": 7}, include_keys=True)        # → {"b": 7}
-                          Selector["a","b"].apply({"a":1,"b":2}, include_keys=True) # → {"a":1,"b":2}
+                Selector["b"].apply({"b": 7}, include_keys=True)          # → {"b": 7}
+                Selector["a","b"].apply({"a":1,"b":2}, include_keys=True)  # → {"a":1,"b":2}
 
-                          With a fan-out (``[:]``), the wrapping happens per element:
-                          Selector[:]["v"].apply([{"v":1},{"v":2}], include_keys=True)
-                          # → [{"v": 1}, {"v": 2}]
+                With a fan-out (``[:]``), the wrapping happens per element:
+                Selector[:]["v"].apply([{"v":1},{"v":2}], include_keys=True)
+                # → [{"v": 1}, {"v": 2}]
+
+            include_null: If True, return None (instead of raising) when a key,
+                index, or attribute is missing.  The None propagates through the
+                rest of the chain so subsequent steps are skipped.
+
+                For multi select, each missing key becomes None individually:
+                Selector["a","b"].apply({"a": 1}, include_null=True)  # → [1, None]
+
+                With a fan-out, missing elements become None per item:
+                Selector[:]["x"].apply([{"x":1},{"y":2}], include_null=True)
+                # → [1, None]
 
         Returns:
             Any: The result after all steps have been applied.
@@ -326,21 +340,48 @@ class Selector:
         """
         for i, step in enumerate(self.steps):
             kind = step[0]
+
             if kind == "map":
                 rest_steps = self.steps[i + 1:]
                 if not rest_steps:
                     return list(data)
                 rest = type(self)(rest_steps)
-                return [rest.apply(x, include_keys=include_keys) for x in data]
-            elif kind in ("getitem", "slice"):
-                data = data[step[1]]
-            elif kind == "multi":
-                data = [data[k] for k in step[1]]
-            elif kind == "getattr":
-                data = getattr(data, step[1])
-            elif kind == "call":
-                _, call_args, call_kwargs = step
-                data = data(*call_args, **call_kwargs)
+                return [
+                    rest.apply(x, include_keys=include_keys, include_null=include_null)
+                    for x in data
+                ]
+
+            # Short-circuit: a previous step already failed
+            if include_null and data is _MISSING:
+                continue
+
+            try:
+                if kind in ("getitem", "slice"):
+                    data = data[step[1]]
+                elif kind == "multi":
+                    if include_null:
+                        row = []
+                        for k in step[1]:
+                            try:
+                                row.append(data[k])
+                            except (KeyError, IndexError, TypeError):
+                                row.append(None)
+                        data = row
+                    else:
+                        data = [data[k] for k in step[1]]
+                elif kind == "getattr":
+                    data = getattr(data, step[1])
+                elif kind == "call":
+                    _, call_args, call_kwargs = step
+                    data = data(*call_args, **call_kwargs)
+            except (KeyError, IndexError, AttributeError, TypeError):
+                if include_null:
+                    data = _MISSING
+                else:
+                    raise
+
+        if include_null and data is _MISSING:
+            data = None
 
         if include_keys and self.steps:
             last = self.steps[-1]
