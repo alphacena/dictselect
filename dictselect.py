@@ -24,6 +24,7 @@ Supported operations
 * Selector.method(args)             — record a method call (chained after attr access)
 * pipe_a + pipe_b                   — compose two pipelines
 * pipe(data) or pipe.apply(data)    — evaluate a pipeline against data
+* pipe(data, include_keys=True)     — wrap leaf result(s) with the last key as a dict
 
 Python ≥ 3.9 is required.
 """
@@ -180,8 +181,8 @@ class Selector:
             Selector: A new selector with the step appended.
 
         Raises:
-            AttributeError: Immediately for any dunder name (``__copy__``, ``__reduce__``, …)
-                            so that pickle, ``copy``, and introspection tools behave correctly.
+            AttributeError: Immediately for any dunder name (__copy__, __reduce__, …)
+                            so that pickle, copy, and introspection tools behave correctly.
 
         Example:
             Selector.upper.apply("hello")          # → <method 'upper'>
@@ -229,14 +230,16 @@ class Selector:
         """
         if self.steps and self.steps[-1][0] == "getattr":
             return type(self)(self.steps + (("call", args, kwargs),))
-        if len(args) != 1 or kwargs:
+        extra = set(kwargs) - {"include_keys"}
+        if len(args) != 1 or extra:
             raise TypeError(
                 "Selector evaluation expects exactly one positional argument "
-                "(the data). To record a method call, access the method via "
-                "attribute first (e.g. pipe.method(args)), or use "
+                "(the data) and an optional include_keys keyword. To record a "
+                "method call, access the method via attribute first "
+                "(e.g. pipe.method(args)), or use "
                 "pipe.invoke(args) to record a call step explicitly."
             )
-        return self.apply(args[0])
+        return self.apply(args[0], **kwargs)
 
     def invoke(self, *args, **kwargs):
         """Record a call step unconditionally, regardless of the previous step.
@@ -287,7 +290,7 @@ class Selector:
         """
         return f"Selector({list(self.steps)!r})"
 
-    def apply(self, data: Any) -> Any:
+    def apply(self, data: Any, include_keys: bool = False) -> Any:
         """Evaluate the recorded pipeline against data.
 
         Steps are executed in order:
@@ -303,6 +306,16 @@ class Selector:
 
         Args:
             data: The root data object to query.
+            include_keys: If True, wrap the leaf result with the last key-bearing
+                          step's key(s) as a dict.  Only ``getitem`` and ``multi`` steps
+                          qualify; all other terminal steps leave the result unchanged.
+
+                          Selector["b"].apply({"b": 7}, include_keys=True)        # → {"b": 7}
+                          Selector["a","b"].apply({"a":1,"b":2}, include_keys=True) # → {"a":1,"b":2}
+
+                          With a fan-out (``[:]``), the wrapping happens per element:
+                          Selector[:]["v"].apply([{"v":1},{"v":2}], include_keys=True)
+                          # → [{"v": 1}, {"v": 2}]
 
         Returns:
             Any: The result after all steps have been applied.
@@ -318,7 +331,7 @@ class Selector:
                 if not rest_steps:
                     return list(data)
                 rest = type(self)(rest_steps)
-                return [rest.apply(x) for x in data]
+                return [rest.apply(x, include_keys=include_keys) for x in data]
             elif kind in ("getitem", "slice"):
                 data = data[step[1]]
             elif kind == "multi":
@@ -328,4 +341,11 @@ class Selector:
             elif kind == "call":
                 _, call_args, call_kwargs = step
                 data = data(*call_args, **call_kwargs)
+
+        if include_keys and self.steps:
+            last = self.steps[-1]
+            if last[0] == "getitem":
+                return {last[1]: data}
+            if last[0] == "multi":
+                return dict(zip(last[1], data))
         return data
