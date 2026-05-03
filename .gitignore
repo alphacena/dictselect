@@ -1,6 +1,6 @@
 __pycache__
 .idea
-.venv/
+dictselect/.venv/
 dist/
 build/
 *.egg-info/

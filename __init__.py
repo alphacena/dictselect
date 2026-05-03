@@ -1,1 +1,0 @@
-from .dictselect import Selector
