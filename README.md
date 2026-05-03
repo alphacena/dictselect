@@ -110,6 +110,22 @@ Also works on `.apply()`:
 Selector["x"].apply({"x": 7}, include_keys=True)  # → {"x": 7}
 ```
 
+### Aliasing output keys
+
+Use a single-entry dict `{"key": "alias"}` instead of a plain key to rename the output field. Plain keys keep their original name. This works for single lookups and multi-key inputs alike.
+
+```python
+Selector[{"a": "alias_a"}]({"a": 7}, include_keys=True)
+# → {"alias_a": 7}
+
+Selector[{"a": "alias_a"}, "b", {"c": "alias_c"}](
+    {"a": 1, "b": 2, "c": 3}, include_keys=True
+)
+# → {"alias_a": 1, "b": 2, "alias_c": 3}
+```
+
+Without `include_keys`, aliases are ignored and raw values are returned as usual.
+
 ## Handling missing values
 
 Pass `include_null=True` to get `None` instead of a `KeyError`/`IndexError` when a key or index doesn't exist. Once a step fails, the rest of the chain is skipped and `None` is returned.
