@@ -236,7 +236,6 @@ class TestCompose:
 class TestMisc:
     def test_empty_selector_is_identity(self):
         data = {"x": 42}
-        # Here is does make a difference when using the uninitializes Selector for an empty object.
         assert Selector().apply(data) is data
 
     def test_repr_contains_class_name(self):
@@ -312,7 +311,7 @@ class TestIncludeNull:
         assert Selector["a"]({"a": 42}, include_null=True) == 42
 
     def test_missing_key_propagates_through_chain(self):
-        # Once a step returns None, subsequent steps are skipped
+        # Once a step fails, the _MISSING sentinel threads through; remaining steps are skipped
         assert Selector["x"]["y"]["z"]({"x": {}}, include_null=True) is None
 
     def test_missing_index_returns_none(self):
@@ -348,31 +347,33 @@ class TestIncludeNull:
 
 
 class TestAliasKeys:
+    # ── dict order is now {alias: access_key} ──────────────────────────────
+
     def test_single_alias_with_include_keys(self):
-        assert Selector[{"a": "a_alias"}]({"a": 1}, include_keys=True) == {"a_alias": 1}
+        assert Selector[{"a_alias": "a"}]({"a": 1}, include_keys=True) == {"a_alias": 1}
 
     def test_single_alias_without_include_keys_returns_raw(self):
-        assert Selector[{"a": "a_alias"}]({"a": 1}) == 1
+        assert Selector[{"a_alias": "a"}]({"a": 1}) == 1
 
     def test_multi_all_aliased(self):
-        result = Selector[{"a": "x"}, {"b": "y"}]({"a": 1, "b": 2}, include_keys=True)
+        result = Selector[{"x": "a"}, {"y": "b"}]({"a": 1, "b": 2}, include_keys=True)
         assert result == {"x": 1, "y": 2}
 
     def test_multi_partial_alias(self):
-        result = Selector[{"a": "x"}, "b"]({"a": 1, "b": 2}, include_keys=True)
+        result = Selector[{"x": "a"}, "b"]({"a": 1, "b": 2}, include_keys=True)
         assert result == {"x": 1, "b": 2}
 
     def test_multi_int_keys_aliased(self):
-        result = Selector[{0: "first"}, 2]([10, 20, 30], include_keys=True)
+        result = Selector[{"first": 0}, 2]([10, 20, 30], include_keys=True)
         assert result == {"first": 10, 2: 30}
 
     def test_map_then_aliased_multi(self):
         data = [{"a": 1, "b": 2}, {"a": 3, "b": 4}]
-        result = Selector[:][{"a": "x"}, "b"](data, include_keys=True)
+        result = Selector[:][{"x": "a"}, "b"](data, include_keys=True)
         assert result == [{"x": 1, "b": 2}, {"x": 3, "b": 4}]
 
     def test_alias_with_include_null_partial_miss(self):
-        result = Selector[{"a": "x"}, {"b": "y"}]({"a": 1}, include_keys=True, include_null=True)
+        result = Selector[{"x": "a"}, {"y": "b"}]({"a": 1}, include_keys=True, include_null=True)
         assert result == {"x": 1, "y": None}
 
     def test_empty_dict_raises(self):
@@ -381,18 +382,64 @@ class TestAliasKeys:
 
     def test_multi_entry_dict_standalone_raises(self):
         with pytest.raises(TypeError, match="single-entry"):
-            Selector[{"a": "x", "b": "y"}]
+            Selector[{"x": "a", "y": "b"}]
 
     def test_multi_entry_dict_inside_tuple_raises(self):
         with pytest.raises(TypeError, match="single-entry"):
-            Selector[{"a": "x", "b": "y"}, "c"]
+            Selector[{"x": "a", "y": "b"}, "c"]
 
     def test_mixed_access_key_types_raise(self):
         with pytest.raises(TypeError, match="homogeneous"):
-            Selector[{"a": "x"}, 0]
+            Selector[{"x": "a"}, 0]
 
     def test_pickle_roundtrip_with_alias(self):
         import pickle
-        pipe = Selector[{"a": "a_alias"}, "b"]
+        pipe = Selector[{"a_alias": "a"}, "b"]
         restored = pickle.loads(pickle.dumps(pipe))
         assert restored.steps == pipe.steps
+
+    # ── Selector-valued access ─────────────────────────────────────────────
+
+    def test_selector_alias_single_with_include_keys(self):
+        sub = Selector["a"]["b"]
+        result = Selector[{"v": sub}]({"a": {"b": 9}}, include_keys=True)
+        assert result == {"v": 9}
+
+    def test_selector_alias_single_without_include_keys_returns_raw(self):
+        sub = Selector["a"]["b"]
+        assert Selector[{"v": sub}]({"a": {"b": 9}}) == 9
+
+    def test_selector_alias_multi_with_include_keys(self):
+        name_sel = Selector["name"]["first_name", "last_name"]
+        data = {"employees": [
+            {"name": {"first_name": "Alice", "last_name": "Smith"}, "adress": "1 Main St"},
+            {"name": {"first_name": "Bob",   "last_name": "Jones"}, "adress": "2 Oak Ave"},
+        ]}
+        result = Selector["employees"][:][{"name": name_sel}, "adress"](data, include_keys=True)
+        assert result == [
+            {"name": ["Alice", "Smith"], "adress": "1 Main St"},
+            {"name": ["Bob",   "Jones"], "adress": "2 Oak Ave"},
+        ]
+
+    def test_selector_alias_multi_without_include_keys_returns_list(self):
+        sub = Selector["x"]
+        result = Selector[{"v": sub}, "y"]({"x": 1, "y": 2})
+        assert result == [1, 2]
+
+    def test_bare_selector_as_plain_key_raises(self):
+        with pytest.raises(TypeError, match="must be aliased"):
+            Selector[Selector["a"]]
+
+    def test_bare_selector_inside_multi_raises(self):
+        with pytest.raises(TypeError, match="must be aliased"):
+            Selector[Selector["a"], "b"]
+
+    def test_pickle_roundtrip_with_selector_alias(self):
+        import pickle
+        sub = Selector["a"]["b"]
+        pipe = Selector[{"v": sub}]
+        restored = pickle.loads(pickle.dumps(pipe))
+        # Verify the restored selector produces identical results (Selector has no __eq__,
+        # so comparing .steps directly would fail due to identity checks on nested Selectors)
+        data = {"a": {"b": 42}}
+        assert restored(data, include_keys=True) == pipe(data, include_keys=True)

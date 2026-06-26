@@ -25,8 +25,10 @@ Supported operations
 * pipe_a + pipe_b                   — compose two pipelines
 * pipe(data) or pipe.apply(data)    — evaluate a pipeline against data
 * pipe(data, include_keys=True)     — wrap leaf result(s) with the last key as a dict
-* Selector[{"key": "alias"}]        — aliased key: lookup uses "key", wrap uses "alias"
-* Selector[{"a": "x"}, "b"]        — mixed multi-key: aliases per item, plain keys fall back to their name
+* Selector[{"alias": "key"}]        — aliased key: lookup uses "key", wrap uses "alias"
+* Selector[{"x": "a"}, "b"]        — mixed multi-key: aliases per item, plain keys fall back to their name
+* Selector[{"name": sub_selector}] — sub-selector alias: sub_selector is applied to the current data,
+                                     stored under "name" (only effective with include_keys=True)
 * pipe(data, include_null=True)     — return None for missing keys instead of raising
 
 Python ≥ 3.9 is required.
@@ -174,7 +176,7 @@ class Selector(metaclass=_SelectorMeta):
                     f"Aliased key lookup requires a single-entry dict; "
                     f"got {len(key)} entries."
                 )
-            (access_key, alias), = key.items()
+            (alias, access_key), = key.items()  # {alias: access_key}
             return type(self)(self.steps + (("getitem", access_key, alias),))
         if isinstance(key, (tuple, list)):
             if len(key) < 2:
@@ -192,16 +194,23 @@ class Selector(metaclass=_SelectorMeta):
                             f"Aliased key lookup requires a single-entry dict; "
                             f"got {len(item)} entries."
                         )
-                    (k, a), = item.items()
+                    (a, k), = item.items()  # {alias: access_key}
                     access_keys.append(k)
                     aliases.append(a)
                     any_alias = True
+                elif isinstance(item, Selector):
+                    raise TypeError(
+                        "A Selector access must be aliased; "
+                        "use {'name': selector} instead of a bare Selector."
+                    )
                 else:
                     access_keys.append(item)
                     aliases.append(None)
-            if all(isinstance(k, str) for k in access_keys):
+            # Selectors are exempt from the homogeneity check; only plain keys must agree
+            plain_keys = [k for k in access_keys if not isinstance(k, Selector)]
+            if all(isinstance(k, str) for k in plain_keys):
                 pass
-            elif all(isinstance(k, int) for k in access_keys):
+            elif all(isinstance(k, int) for k in plain_keys):
                 pass
             else:
                 raise TypeError(
@@ -211,6 +220,11 @@ class Selector(metaclass=_SelectorMeta):
             if any_alias:
                 return type(self)(self.steps + (("multi", tuple(access_keys), tuple(aliases)),))
             return type(self)(self.steps + (("multi", tuple(access_keys)),))
+        if isinstance(key, Selector):
+            raise TypeError(
+                "A Selector access must be aliased; "
+                "use {'name': selector} instead of a bare Selector."
+            )
         return type(self)(self.steps + (("getitem", key),))
 
     def __getattr__(self, name: str):
@@ -349,18 +363,27 @@ class Selector(metaclass=_SelectorMeta):
     def __execute_step(data, step, include_null):
         kind = step[0]
         try:
-            if kind in ("getitem", "slice"):
+            if kind == "getitem":
+                access = step[1]
+                if isinstance(access, Selector):
+                    return access.apply(data, include_null=include_null)
+                return data[access]
+            if kind == "slice":
                 return data[step[1]]
             if kind == "multi":
+                def _resolve(k):
+                    if isinstance(k, Selector):
+                        return k.apply(data, include_null=include_null)
+                    return data[k]
                 if include_null:
                     row = []
                     for k in step[1]:
                         try:
-                            row.append(data[k])
+                            row.append(_resolve(k))
                         except (KeyError, IndexError, TypeError):
                             row.append(None)
                     return row
-                return [data[k] for k in step[1]]
+                return [_resolve(k) for k in step[1]]
             if kind == "getattr":
                 return getattr(data, step[1])
             if kind == "call":
