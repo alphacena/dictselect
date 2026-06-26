@@ -1,13 +1,6 @@
 # dictselect
 
-A Python library for extracting data from nested dicts and lists using reusable pipelines.
-
-```python
-from dictselect import Selector
-
-pipe = Selector["annotations"][:]["x_min", "x_max"]
-my_data_selection = pipe(data_dict)
-```
+A lightweight Python library for extracting data from nested dicts and lists using composable, reusable selectors.
 
 ## Installation
 
@@ -17,14 +10,12 @@ pip install dictselect
 
 Requires Python ≥ 3.9.
 
-## How it works
-
-Build a `Selector` by chaining operations, then call it with your data. The pipeline is built to be reusable.
+## Quick start
 
 ```python
 from dictselect import Selector
 
-data_dict = {
+data = {
     "image_id": "xa001",
     "annotations": [
         {"id": 1, "x_min": 10, "x_max": 20, "label": "cat"},
@@ -32,71 +23,149 @@ data_dict = {
     ],
 }
 
-Selector["image_id"](data_dict)                          # → "xa001"
-Selector["annotations"][0]["label"](data_dict)           # → "cat"
-Selector["annotations"][:]["label"](data_dict)           # → ["cat", "dog"]
-Selector["annotations"][:]["x_min", "x_max"](data_dict)  # → [[10, 20], [30, 50]]
+Selector["image_id"](data)                          # → "xa001"
+Selector["annotations"][0]["label"](data)           # → "cat"
+Selector["annotations"][:]["label"](data)           # → ["cat", "dog"]
+Selector["annotations"][:]["x_min", "x_max"](data)  # → [[10, 20], [30, 50]]
+```
+
+Build a selector once, apply it to many objects:
+
+```python
+sel = Selector["annotations"][:]["x_min", "x_max"]
+sel(record_a)
+sel(record_b)
 ```
 
 ## Operations
 
-| Syntax                             | What it does                                                            |
-|------------------------------------|-------------------------------------------------------------------------|
-| `Selector["key"]`                  | Dict key or list index lookup                                           |
-| `Selector[0]`, `Selector[-1]`      | List index                                                              |
-| `Selector[1:3]`                    | Slice                                                                   |
-| `Selector[:]` or `Selector[...]`   | Fan-out — apply the rest of the chain to **every element** at this step |
-| `Selector["a", "b"]`               | Input multiple keys at once, returns a list                             |
-| `Selector.method()`                | Call a method on the current value                                      |
-| `pipe_a + pipe_b`                  | Compose two pipelines into one                                          |
-| `Selector.invoke(*args, **kwargs)` | Call the function if the current value is a function                    |
+| Syntax                               | What it does                                        |
+|--------------------------------------|-----------------------------------------------------|
+| `Selector["key"]`                    | Dict key or list index lookup                       |
+| `Selector[0]`, `Selector[-1]`        | List index (positive or negative)                   |
+| `Selector[1:3]`                      | Slice — returns a sub-list or sub-string            |
+| `Selector[:]` or `Selector[...]`     | Fan-out — map remaining steps over every element    |
+| `Selector["a", "b"]`                 | Pluck multiple keys at once, returns a list         |
+| `Selector.attr`                      | Attribute access (`getattr`)                        |
+| `Selector.method(args)`              | Attribute access followed by a call                 |
+| `sel_a + sel_b`                      | Compose two selectors                               |
+| `sel(data, include_keys=True)`       | Wrap result in a dict keyed by the last access key  |
+| `sel(data, include_null=True)`       | Return `None` instead of raising on missing keys    |
+| `Selector[{"alias": "key"}]`         | Aliased key — access via `"key"`, label as `"alias"`|
+| `Selector["fn"].invoke(*args)`       | Call a callable value stored in data                |
+
+## Usage
+
+### Key and index lookup
+
+```python
+Selector["name"]({"name": "Alice"})   # → "Alice"
+Selector[0]([10, 20, 30])             # → 10
+Selector[-1]([10, 20, 30])            # → 30
+Selector["a"]["b"]({"a": {"b": 7}})  # → 7
+```
+
+### Slicing
+
+```python
+Selector[1:3]([0, 1, 2, 3, 4])  # → [1, 2]
+Selector[:2]([10, 20, 30])       # → [10, 20]
+Selector[-2:]([10, 20, 30])      # → [20, 30]
+Selector[::2]([0, 1, 2, 3, 4])  # → [0, 2, 4]
+```
 
 ### Fan-out `[:]`
 
-`[:]` maps the remaining steps over every item in this step. Steps after `[:]` run on each element individually.
+`[:]` (or `[...]`) maps all subsequent steps over every element of the current sequence. Steps after `[:]` run on each element individually.
 
 ```python
 data = [{"v": 1}, {"v": 2}, {"v": 3}]
 
 Selector[:]["v"](data)   # → [1, 2, 3]
-Selector[:][:][0]([[10, 20], [30, 40]])  # → [[10], [30]]  (nested fan-out)
+Selector[:][0]([[10, 20], [30, 40]])  # → [10, 30]
 ```
 
-### Multi-key input `["a", "b"]`
+### Plucking multiple keys
 
-Returns a list of values for each key. All keys must be the same type (all strings or all integers).
+Pass a tuple or list of keys to retrieve several fields at once. All keys must be the same type (all `str` or all `int`). Returns a list of values in the order given.
 
 ```python
 Selector["x", "y"]({"x": 1, "y": 2, "z": 3})  # → [1, 2]
+Selector[0, 2]([10, 20, 30, 40])               # → [10, 30]
 ```
 
-### Method calls
-
-Access an attribute, then call it like a regular Python method.
+Combined with fan-out:
 
 ```python
-Selector.upper()("hello")               # → "HELLO"
-Selector[:].upper()(["hi", "there"])    # → ["HI", "THERE"]
+Selector["annotations"][:]["x_min", "x_max"](data)
+# → [[10, 20], [30, 50]]
 ```
 
-### Composition
+### Attribute access and method calls
 
-Join two pipelines with `+`.
+Chain attribute access with `.attr`, then call it like a regular Python method:
+
+```python
+Selector.upper()("hello")                   # → "HELLO"
+Selector.replace("l", "r")("hello")        # → "herro"
+Selector[:].upper()(["hi", "there"])       # → ["HI", "THERE"]
+Selector["title"].upper()({"title": "hi"}) # → "HI"
+```
+
+### Composing selectors
+
+Join two selectors with `+`. Neither operand is mutated:
 
 ```python
 head = Selector["data"][:]
 tail = Selector["value"]
-(head + tail)({"data": [{"value": 1}, {"value": 2}]})  # → [1, 2]
+sel = head + tail
+sel({"data": [{"value": 1}, {"value": 2}]})  # → [1, 2]
 ```
 
-## Including keys in the result
+### Calling vs. evaluating
 
-Pass `include_keys=True` to wrap the result with the last key as a dict. Works for single key lookups and multi-key inputs.
+Normally, calling a selector evaluates it against the data:
+
+```python
+sel = Selector["key"]
+sel({"key": 42})       # → 42
+sel.apply({"key": 42}) # same thing
+```
+
+**Attribute-access exception:** if the last recorded step is an attribute name, calling the selector *records* a method-call step instead of evaluating. Use `.apply()` to force evaluation:
+
+```python
+Selector["title"].upper()           # records the .upper() call — returns a new Selector
+Selector["title"].upper()(data)     # evaluates → "HELLO"
+
+Selector.upper.apply("hello")       # force-evaluates → the bound method object (not "HELLO")
+```
+
+**Calling a function stored in data:** accessing a callable value via `["key"]` and then calling with `()` would evaluate the selector (returning the function itself), not invoke it. Use `.invoke()` to record a function call as a step:
+
+```python
+data = {"fn": lambda x: x * 2}
+
+Selector["fn"](data)            # → the lambda object (selector evaluated, function not called)
+Selector["fn"].invoke(21)(data) # → 42 (function is called with 21 at evaluation time)
+```
+
+## Returning keys alongside values
+
+Pass `include_keys=True` to wrap the result in a dict keyed by the last access key.
 
 ```python
 Selector["a"]["b"]({"a": {"b": 12}}, include_keys=True)
 # → {"b": 12}
 
+Selector["x"].apply({"x": 7}, include_keys=True)
+# → {"x": 7}
+```
+
+With fan-out, wrapping happens per element:
+
+```python
 Selector[:]["a"]([{"a": 1}, {"a": 2}], include_keys=True)
 # → [{"a": 1}, {"a": 2}]
 
@@ -104,21 +173,17 @@ Selector[:]["a", "b"]([{"a": 1, "b": 2, "c": 3}, {"a": 4, "c": 6, "b": 5}], incl
 # → [{"a": 1, "b": 2}, {"a": 4, "b": 5}]
 ```
 
-Also works on `.apply()`:
-
-```python
-Selector["x"].apply({"x": 7}, include_keys=True)  # → {"x": 7}
-```
+Terminal steps that are not key lookups (slices, method calls) pass through unchanged.
 
 ### Aliasing output keys
 
-Use a single-entry dict `{"key": "alias"}` instead of a plain key to rename the output field. Plain keys keep their original name. This works for single lookups and multi-key inputs alike.
+Use a single-entry dict `{"alias": "key"}` to rename a field in the output. The dict key is the **output name**, the dict value is the **access key**. Plain keys keep their original name.
 
 ```python
-Selector[{"a": "alias_a"}]({"a": 7}, include_keys=True)
+Selector[{"alias_a": "a"}]({"a": 7}, include_keys=True)
 # → {"alias_a": 7}
 
-Selector[{"a": "alias_a"}, "b", {"c": "alias_c"}](
+Selector[{"alias_a": "a"}, "b", {"alias_c": "c"}](
     {"a": 1, "b": 2, "c": 3}, include_keys=True
 )
 # → {"alias_a": 1, "b": 2, "alias_c": 3}
@@ -126,49 +191,38 @@ Selector[{"a": "alias_a"}, "b", {"c": "alias_c"}](
 
 Without `include_keys`, aliases are ignored and raw values are returned as usual.
 
+### Sub-selector aliases
+
+The access value in an alias dict can itself be a `Selector`. It is applied to the current data and stored under the given alias. A bare `Selector` without an alias is not allowed.
+
+```python
+name_sel = Selector["name"]["first_name", "last_name"]
+
+Selector["employees"][:][{"name": name_sel}, "adress"](data, include_keys=True)
+# → [
+#     {"name": ["Alice", "Smith"], "adress": "1 Main St"},
+#     {"name": ["Bob",   "Jones"], "adress": "2 Oak Ave"},
+# ]
+```
+
 ## Handling missing values
 
-Pass `include_null=True` to get `None` instead of a `KeyError`/`IndexError` when a key or index doesn't exist. Once a step fails, the rest of the chain is skipped and `None` is returned.
+Pass `include_null=True` to return `None` instead of raising `KeyError` or `IndexError` when a key or index is absent. Once a step fails, the rest of the chain is skipped.
 
 ```python
 Selector["a"]["missing"]({"a": {}}, include_null=True)
-# → None   (instead of KeyError)
+# → None
 
 Selector[:]["x"]([{"x": 1}, {"y": 2}, {"x": 3}], include_null=True)
 # → [1, None, 3]
 
 Selector["a", "b"]({"a": 1}, include_null=True)
-# → [1, None]   (missing keys in multi-select become None individually)
+# → [1, None]  (each missing key becomes None individually)
 ```
 
-The two flags can be combined:
+Both flags can be combined:
 
 ```python
 Selector[:]["x"]([{"x": 1}, {"y": 2}], include_null=True, include_keys=True)
 # → [{"x": 1}, {"x": None}]
-```
-
-## Calling vs. evaluating
-
-Normally, calling a selector evaluates it:
-
-```python
-pipe = Selector["key"]
-pipe({"key": 42})  # → 42
-```
-
-**Exception 1:** if the last step is an attribute name (e.g. `.upper`), calling it *records* a method call instead of evaluating. Use `.apply(data)` to force evaluation in that case.
-
-```python
-pipe = Selector["title"].upper()       # records .upper() call
-pipe({"title": "hello"})               # evaluates → "HELLO"
-
-Selector.upper.apply("hello")          # force evaluation → <method object>
-```
-
-**Exception 2:** if the last step is a function as a value, use `.invoke(*args, **kwargs)` to force evaluation in that case.
-
-```python
-pipe = Selector["function"]()            # value will be a function. Calling the function, results in evaluating the selector -> ERROR.
-pipe = Selector["function"].invoke()     # Calls the function without evaluating the Selector
 ```
